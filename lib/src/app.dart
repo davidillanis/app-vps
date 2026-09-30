@@ -719,18 +719,45 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> createSchedule() async {
+  IconData scheduleIcon(ScheduledAction action) => switch (action) {
+    ScheduledAction.start => Icons.power_settings_new,
+    ScheduledAction.stop => Icons.power_off_outlined,
+    ScheduledAction.archive => Icons.archive_outlined,
+    ScheduledAction.unarchive => Icons.unarchive_outlined,
+  };
+
+  Future<void> createSchedule([ServerSchedule? existing]) async {
     if (c.servers.isEmpty) return;
-    String serverId = c.servers.first.id;
-    var time = const TimeOfDay(hour: 22, minute: 0);
-    final days = <int>{};
-    final result = await showDialog<ArchiveSchedule>(
+    var serverId = existing?.serverId ?? c.servers.first.id;
+    var selectedAction = existing?.action ?? ScheduledAction.archive;
+    var time = TimeOfDay(
+      hour: existing?.hour ?? 22,
+      minute: existing?.minute ?? 0,
+    );
+    final days = {...?existing?.days};
+    String? validation;
+    ServerSchedule candidate() => ServerSchedule(
+      id: existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+      serverId: serverId,
+      action: selectedAction,
+      days: days.toList()..sort(),
+      hour: time.hour,
+      minute: time.minute,
+      enabled: existing?.enabled ?? true,
+      lastRun: existing?.lastRun,
+      lastAttemptAt: existing?.lastAttemptAt,
+      lastResult: existing?.lastResult,
+      lastActionId: existing?.lastActionId,
+    );
+    final result = await showDialog<ServerSchedule>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, update) => AlertDialog(
-          title: const Text('Programar archivado'),
+          title: Text(
+            existing == null ? 'Nueva programación' : 'Editar programación',
+          ),
           content: SizedBox(
-            width: 450,
+            width: 480,
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -740,20 +767,52 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
                     initialValue: serverId,
                     isExpanded: true,
                     decoration: const InputDecoration(labelText: 'Servidor'),
-                    items: c.servers
+                    items: [
+                      if (!c.servers.any((s) => s.id == serverId))
+                        DropdownMenuItem(
+                          value: serverId,
+                          child: const Text('Servidor no disponible'),
+                        ),
+                      ...c.servers.map(
+                        (s) => DropdownMenuItem(
+                          value: s.id,
+                          child: Text(s.name, overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) => update(() {
+                      serverId = value!;
+                      validation = null;
+                    }),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<ScheduledAction>(
+                    initialValue: selectedAction,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Acción automática',
+                    ),
+                    items: ScheduledAction.values
                         .map(
-                          (s) => DropdownMenuItem(
-                            value: s.id,
-                            child: Text(
-                              s.name,
-                              overflow: TextOverflow.ellipsis,
+                          (a) => DropdownMenuItem(
+                            value: a,
+                            child: Row(
+                              children: [
+                                Icon(scheduleIcon(a), size: 20),
+                                const SizedBox(width: 10),
+                                Text(a.label),
+                              ],
                             ),
                           ),
                         )
                         .toList(),
-                    onChanged: (v) => update(() => serverId = v!),
+                    onChanged: (value) => update(() {
+                      selectedAction = value!;
+                      validation = null;
+                    }),
                   ),
                   const SizedBox(height: 16),
+                  const Text('Repetir los días'),
                   Wrap(
                     spacing: 6,
                     children: List.generate(
@@ -761,32 +820,80 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
                       (i) => FilterChip(
                         label: Text(dayNames[i]),
                         selected: days.contains(i + 1),
-                        onSelected: (v) => update(() {
-                          if (v) {
+                        onSelected: (selected) => update(() {
+                          if (selected) {
                             days.add(i + 1);
                           } else {
                             days.remove(i + 1);
                           }
+                          validation = null;
                         }),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      TextButton(
+                        onPressed: () => update(() {
+                          days.addAll([1, 2, 3, 4, 5, 6, 7]);
+                          validation = null;
+                        }),
+                        child: const Text('Todos los días'),
+                      ),
+                      TextButton(
+                        onPressed: () => update(() {
+                          days.clear();
+                          days.addAll([1, 2, 3, 4, 5]);
+                          validation = null;
+                        }),
+                        child: const Text('Lunes a viernes'),
+                      ),
+                      TextButton(
+                        onPressed: () => update(() {
+                          days.clear();
+                          days.addAll([6, 7]);
+                          validation = null;
+                        }),
+                        child: const Text('Fin de semana'),
+                      ),
+                    ],
+                  ),
                   OutlinedButton.icon(
                     onPressed: () async {
                       final value = await showTimePicker(
                         context: context,
                         initialTime: time,
+                        helpText: 'Hora de ejecución',
                       );
-                      if (value != null) update(() => time = value);
+                      if (value != null && context.mounted) {
+                        update(() {
+                          time = value;
+                          validation = null;
+                        });
+                      }
                     },
                     icon: const Icon(Icons.schedule),
-                    label: Text(time.format(context)),
+                    label: Text(
+                      'Hora: ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+                    ),
                   ),
                   const SizedBox(height: 12),
+                  Text(selectedAction.warning),
+                  const SizedBox(height: 12),
                   const Text(
-                    'Hora local del dispositivo. Funciona con la app abierta y activa. Guardar autoriza el archivado automático en los días y hora seleccionados; interrumpirá los servicios del servidor.',
+                    'Se repetirá cada semana en la hora local del dispositivo, con la app abierta y activa. La confirmación autoriza las futuras ejecuciones.',
                   ),
+                  if (validation != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        validation!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -799,115 +906,199 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
             FilledButton(
               onPressed: days.isEmpty
                   ? null
-                  : () => Navigator.pop(
-                      context,
-                      ArchiveSchedule(
-                        id: DateTime.now().microsecondsSinceEpoch.toString(),
-                        serverId: serverId,
-                        days: days.toList()..sort(),
-                        hour: time.hour,
-                        minute: time.minute,
-                      ),
-                    ),
-              child: const Text('Autorizar y guardar'),
+                  : () {
+                      final value = candidate();
+                      final problem = c.scheduleError(value);
+                      if (problem != null) {
+                        update(() => validation = problem);
+                        return;
+                      }
+                      Navigator.pop(context, value);
+                    },
+              child: const Text('Continuar'),
             ),
           ],
         ),
       ),
     );
-    if (result != null) await c.addSchedule(result);
+    if (result == null || !mounted) return;
+    final name = c.servers.firstWhere((s) => s.id == result.serverId).name;
+    if (!await confirm(
+          'Autorizar programación',
+          '${result.action.label} "$name"\n${result.days.map((d) => dayNames[d - 1]).join(', ')} a las ${result.hour.toString().padLeft(2, '0')}:${result.minute.toString().padLeft(2, '0')} (hora local).\n\n${result.action.warning}\n\n${result.enabled ? 'Esta regla se activará al guardar.' : 'La regla seguirá pausada.'}',
+        ) ||
+        !mounted) {
+      return;
+    }
+    try {
+      await c.saveSchedule(result);
+      toast('Programación guardada.');
+    } catch (e) {
+      toast(e.toString());
+    }
   }
 
-  Widget schedules() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      heading(
-        'Automatiza el archivado',
-        'Elige cuándo pausar tus servidores. Las programaciones usan la hora local del dispositivo.',
-      ),
-      if (!c.connected)
-        empty(
-          'Conecta tu cuenta',
-          'Necesitas consultar tus servidores antes de programar.',
-          Icons.schedule,
-        )
-      else ...[
-        FilledButton.icon(
-          onPressed: c.servers.isEmpty ? null : createSchedule,
-          icon: const Icon(Icons.add),
-          label: const Text('Nueva programación'),
+  Widget schedules() {
+    final rules = c.schedules.toList()
+      ..sort((a, b) {
+        final left = a.nextOccurrence(c.clock());
+        final right = b.nextOccurrence(c.clock());
+        if (left == null) return right == null ? a.id.compareTo(b.id) : 1;
+        return right == null ? -1 : left.compareTo(right);
+      });
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        heading(
+          'Automatiza tus servidores',
+          'Encendido, apagado, archivado y desarchivado semanal. Hora local: ${c.clock().timeZoneName}.',
         ),
-        const SizedBox(height: 20),
-        if (c.schedules.isEmpty)
+        if (!c.connected)
           empty(
-            'Sin programaciones',
-            'Añade días y una hora para archivar un servidor.',
-            Icons.event_outlined,
+            'Conecta tu cuenta',
+            'Consulta tus servidores antes de programar.',
+            Icons.schedule,
+          )
+        else ...[
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              FilledButton.icon(
+                onPressed: c.servers.isEmpty ? null : () => createSchedule(),
+                icon: const Icon(Icons.add),
+                label: const Text('Nueva programación'),
+              ),
+              Text(
+                '${rules.where((s) => s.enabled).length} activas · ${rules.where((s) => !s.enabled).length} pausadas',
+              ),
+            ],
           ),
-        ...c.schedules.map((s) {
-          final names = c.servers.where((v) => v.id == s.serverId);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      names.isEmpty ? s.serverId : names.first.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    Text(
-                      '${s.days.map((d) => dayNames[d - 1]).join(', ')} · ${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}',
-                    ),
-                    if (s.lastRun != null) Text('Último intento: ${s.lastRun}'),
-                    Row(
-                      children: [
-                        Switch(
-                          value: s.enabled,
-                          onChanged: (v) async {
-                            if (v &&
-                                !await confirm(
-                                  'Activar programación',
-                                  'Autorizar el archivado automático en los días y hora guardados.',
-                                )) {
-                              return;
-                            }
-                            s.enabled = v;
-                            await c.persistSchedules();
-                            setState(() {});
-                          },
+          const SizedBox(height: 20),
+          if (rules.isEmpty)
+            empty(
+              'Sin programaciones',
+              'Elige un servidor, una acción, los días y la hora.',
+              Icons.event_outlined,
+            ),
+          ...rules.map((s) {
+            final names = c.servers.where((v) => v.id == s.serverId);
+            final next = s.nextOccurrence(c.clock());
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            scheduleIcon(s.action),
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              '${s.action.label} · ${names.isEmpty ? s.serverId : names.first.name}',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        '${s.days.map((d) => dayNames[d - 1]).join(', ')} · ${s.hour.toString().padLeft(2, '0')}:${s.minute.toString().padLeft(2, '0')}',
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        next == null
+                            ? 'Programación pausada'
+                            : 'Próxima ejecución: ${next.toString().substring(0, 16)}',
+                      ),
+                      if (s.lastAttemptAt != null || s.lastRun != null)
+                        Text(
+                          'Último intento: ${s.lastAttemptAt?.replaceFirst('T', ' ').substring(0, 16) ?? s.lastRun}',
                         ),
-                        Text(s.enabled ? 'Activa' : 'Pausada'),
-                        const Spacer(),
-                        IconButton(
-                          tooltip: 'Eliminar programación',
-                          onPressed: () async {
-                            if (await confirm(
-                              'Eliminar programación',
-                              'Esta programación dejará de ejecutarse.',
-                            )) {
-                              await c.removeSchedule(s);
-                            }
-                          },
-                          icon: const Icon(Icons.delete_outline),
+                      if (s.lastResult != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text('Resultado: ${s.lastResult}'),
                         ),
-                      ],
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Switch(
+                                value: s.enabled,
+                                onChanged: (enabled) async {
+                                  if (enabled &&
+                                      !await confirm(
+                                        'Activar programación',
+                                        '${s.action.label} este servidor automáticamente en los días y hora guardados.\n\n${s.action.warning}',
+                                      )) {
+                                    return;
+                                  }
+                                  try {
+                                    await c.setScheduleEnabled(s, enabled);
+                                  } catch (e) {
+                                    toast(e.toString());
+                                  }
+                                },
+                              ),
+                              Text(s.enabled ? 'Activa' : 'Pausada'),
+                            ],
+                          ),
+                          TextButton.icon(
+                            onPressed: () => createSchedule(s),
+                            icon: const Icon(Icons.edit_outlined),
+                            label: const Text('Editar'),
+                          ),
+                          TextButton.icon(
+                            onPressed: () async {
+                              if (!await confirm(
+                                'Eliminar programación',
+                                'Esta regla dejará de ejecutarse. Las operaciones ya enviadas continuarán en Clouding.',
+                              )) {
+                                return;
+                              }
+                              try {
+                                await c.removeSchedule(s);
+                              } catch (e) {
+                                toast(e.toString());
+                              }
+                            },
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Eliminar'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          );
-        }),
+            );
+          }),
+        ],
+        const SizedBox(height: 12),
+        const Text(
+          'Puedes crear, por ejemplo, una regla para encender por la mañana y otra para apagar por la noche. Archivar y desarchivar son acciones independientes. No se permiten dos reglas activas para el mismo servidor en el mismo minuto y días coincidentes.',
+        ),
+        const SizedBox(height: 16),
+        const Text(
+          'Mantén la app abierta y activa. No se recuperan horarios perdidos ni se reintentan escrituras automáticamente. El estado se comprueba cada 15 segundos. Para ejecución permanente, configura un servicio externo; consulta README.md.',
+        ),
       ],
-      const SizedBox(height: 24),
-      const Text(
-        'Mantén la aplicación abierta y activa. Android puede suspenderla en segundo plano y el navegador puede limitar pestañas inactivas. No se recuperan horarios perdidos ni se reintentan escrituras automáticamente. Para ejecución permanente, usa un servicio externo con cron o un temporizador de systemd; consulta README.md.',
-      ),
-    ],
-  );
+    );
+  }
+
   Widget settings() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [

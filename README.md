@@ -24,7 +24,7 @@ En Configuración, introduce la API KEY y pulsa **Validar y guardar**. La valida
 - Encender, apagar, reiniciar, archivar, desarchivar y renombrar, siempre con confirmación. Los estados transitorios y las operaciones pendientes bloquean nuevos envíos.
 - Detalles del servidor, sistema, DNS, creación, backups y snapshots. Costes obtenidos de `cost.pricePerHour` y `cost.pricePerMonthApprox` mediante la consulta de detalles. **Consultar costes actuales** recupera los detalles secuencialmente; si se alcanza el límite de API se muestran los importes recuperados y el error. El subtotal indica cuántos servidores tienen costes conocidos. No es una factura; el importe mensual es una aproximación de Clouding.
 - No se inventa uso de CPU, RAM, disco, transferencia, facturación ni ahorro: el contrato consultado no ofrece esas métricas. Los precios de Clouding se presentan en euros.
-- Archivado semanal por servidor con selección de días y hora, pausa y eliminación. Para modificar días/horario, elimina la programación y crea otra.
+- Automatizaciones semanales por servidor: encender, apagar, archivar o desarchivar. Selección rápida de días, edición de acción/días/hora, pausa y eliminación. Cada regla muestra próxima ejecución, último intento y resultado persistente.
 - Temas claro, oscuro y del sistema; navegación adaptable a móvil y escritorio.
 - Progreso real mediante acciones de Clouding, consultadas cada 15 segundos. Actividad reciente local (últimos 50 eventos, en memoria).
 
@@ -58,15 +58,21 @@ Se verificaron preflight OPTIONS sin credenciales desde `http://localhost:8080`:
 
 ## Programaciones y ejecución permanente
 
-Las programaciones se ejecutan únicamente con la aplicación abierta, activa y con una clave conectada. Se comprueba cada 15 segundos, dentro del minuto elegido, en la zona horaria local del dispositivo. Cambiar de zona horaria cambia la hora efectiva. Android en segundo plano y las pestañas suspendidas no garantizan ejecución. No hay notificaciones, servicio Android en segundo plano ni recuperación de horarios perdidos.
+Las cuatro acciones programadas se ejecutan únicamente con la aplicación abierta, activa y con una clave conectada. Se comprueba cada 15 segundos, dentro del minuto elegido, en la zona horaria local del dispositivo. Cambiar de zona horaria cambia la hora efectiva. Android en segundo plano y las pestañas suspendidas no garantizan ejecución. No hay notificaciones, servicio Android en segundo plano ni recuperación de horarios perdidos.
 
-Guardar o reactivar una programación es la confirmación que autoriza sus futuros archivados. Cada ocurrencia se marca y guarda antes de consultar/enviar. Un servidor ya archivado se omite; si está cambiando de estado o tiene otra operación, se registra la omisión. Los fallos no se reintentan en la misma fecha. Consulta Actividad reciente para revisar los resultados. No ejecutes dos instancias con la misma programación: el bloqueo es local, no distribuido.
+Crear, editar o reactivar una regla requiere confirmar la acción automática, el servidor y el horario. La confirmación autoriza sus futuras ejecuciones. Las reglas antiguas se migran a la acción Archivar, conservando sus días, horarios y último intento.
+
+Puedes crear una regla Encender de lunes a viernes a las 08:00 y otra Apagar a las 22:00. Para servidores archivados, programa Desarchivar por separado antes de Encender, dejando tiempo para que termine la recuperación. Desarchivar no envía una orden de encendido adicional. Apagar mantiene el coste de los recursos de Clouding; no equivale a archivar.
+
+No se permiten reglas activas para el mismo servidor en el mismo minuto con días coincidentes, aunque sus acciones sean iguales. Esta validación se aplica al crear, editar y reactivar. Si se recuperan reglas antiguas en conflicto, se omiten ambas y se registra el resultado.
+
+Cada ocurrencia se marca y guarda antes de consultar/enviar. Se consulta el estado real antes de actuar. Los estados ya alcanzados, transitorios/incompatibles y servidores con otra operación pendiente se omiten. Encender no desarchiva; Desarchivar solo actúa sobre Archived. El ID de acción permite actualizar el resultado a Completada o Error informado por Clouding. Los fallos no se reintentan en la misma fecha. Si la app se interrumpe durante el envío, recupera el progreso conocido o pide revisar el estado. Los resultados sobreviven al cierre. Editar una regla conserva su último intento, evitando una segunda ejecución automática en la misma fecha; crea otra regla en un horario distinto si necesitas una segunda acción ese día. No ejecutes dos instancias con la misma programación: el bloqueo es local, no distribuido.
 
 Para funcionamiento permanente, configura un servicio externo en una máquina siempre encendida (preferiblemente distinta del VPS que se archivará):
 
 1. Guarda la API KEY en un gestor de secretos o archivo protegido que solo pueda leer el usuario del servicio. Nunca la pongas en el repositorio, URL, historial ni logs.
 2. Usa cron o un temporizador systemd con días y hora explícitos, indicando la zona horaria. Por ejemplo `30 22 * * 1,3,5` significa lunes, miércoles y viernes a las 22:30 en la zona horaria del servicio.
-3. Un trabajador consulta GET /servers/{id}, omite Archived y estados transitorios, registra una ocurrencia única (servidor + fecha + horario) y envía POST /servers/{id}/archive con X-API-KEY.
+3. Un trabajador consulta GET /servers/{id}, omite Archived y estados transitorios, comprueba que la acción sea compatible con ese estado, registra una ocurrencia única (regla + servidor + fecha + horario) y envía POST /servers/{id}/start, /stop, /archive o /unarchive según la regla con X-API-KEY.
 4. Guarda el ID de acción y consulta GET /actions/{id} hasta completed/errored. Implementa un bloqueo exclusivo y estado duradero antes de enviar; ante timeout, concilia la acción/estado en vez de reenviar ciegamente. Respeta las cuotas y registra fallos sin la clave.
 5. Pausa/elimina la programación equivalente en la app para evitar dos ejecutores.
 
@@ -76,7 +82,8 @@ Las programaciones locales no se sincronizan con ese servicio: hay que configura
 
 - `lib/main.dart`: arranque.
 - `lib/src/api.dart`: cliente REST, autenticación y paginación.
-- `lib/src/models.dart`: servidor y programación.
+- `lib/src/models.dart`: servidor, acciones programadas y reglas semanales.
+- `lib/src/key_storage.dart`: persistencia de la clave en Android y Web.
 - `lib/src/controller.dart`: estado, almacenamiento, operaciones y planificador.
 - `lib/src/app.dart`: temas, dashboard, costes, horarios y configuración.
 - `test/`: contratos HTTP con respuestas de prueba, horarios y UI adaptable; sin acceso a VPS reales.

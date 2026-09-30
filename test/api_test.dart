@@ -61,7 +61,7 @@ void main() {
     }
   });
   test('Programación respeta días, minuto y un intento por fecha', () {
-    final schedule = ArchiveSchedule(
+    final schedule = ServerSchedule(
       id: 'fixture',
       serverId: 'server',
       days: [1, 3],
@@ -74,7 +74,7 @@ void main() {
     schedule.lastRun = schedule.occurrence(now);
     expect(schedule.due(now), isFalse);
     expect(
-      ArchiveSchedule.fromJson(schedule.toJson()).lastRun,
+      ServerSchedule.fromJson(schedule.toJson()).lastRun,
       schedule.lastRun,
     );
     schedule.enabled = false;

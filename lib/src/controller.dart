@@ -10,9 +10,14 @@ import 'models.dart';
 import 'key_storage.dart';
 
 class VpsController extends ChangeNotifier {
-  VpsController({CloudingApi? api, ApiKeyStorage? keyStorage})
-    : api = api ?? CloudingApi(),
-      keyStorage = keyStorage ?? ApiKeyStorage();
+  VpsController({
+    CloudingApi? api,
+    ApiKeyStorage? keyStorage,
+    DateTime Function()? clock,
+  }) : api = api ?? CloudingApi(),
+       keyStorage = keyStorage ?? ApiKeyStorage(),
+       clock = clock ?? DateTime.now;
+  final DateTime Function() clock;
   final CloudingApi api;
   final ApiKeyStorage keyStorage;
   SharedPreferences? _prefs;
@@ -25,7 +30,7 @@ class VpsController extends ChangeNotifier {
   DateTime? updatedAt;
   ThemeMode theme = ThemeMode.system;
   List<Server> servers = [];
-  List<ArchiveSchedule> schedules = [];
+  List<ServerSchedule> schedules = [];
   final Map<String, String> progress = {}, pendingActions = {};
   final List<String> activity = [];
   Timer? _timer;
@@ -39,7 +44,7 @@ class VpsController extends ChangeNotifier {
       _prefs = await SharedPreferences.getInstance();
       theme = ThemeMode.values[_prefs!.getInt('theme') ?? 0];
       schedules = (jsonDecode(_prefs!.getString('schedules') ?? '[]') as List)
-          .map((s) => ArchiveSchedule.fromJson(Map<String, dynamic>.from(s)))
+          .map((s) => ServerSchedule.fromJson(Map<String, dynamic>.from(s)))
           .toList();
       progress.addAll(
         Map<String, String>.from(
@@ -53,6 +58,15 @@ class VpsController extends ChangeNotifier {
       );
       for (final id in progress.keys.toList()) {
         if (!pendingActions.containsKey(id)) progress[id] = 'Revisar resultado';
+      }
+      for (final schedule in schedules) {
+        if (schedule.lastResult == 'Comprobando estado' ||
+            schedule.lastResult == 'Enviando operación') {
+          schedule.lastActionId = pendingActions[schedule.serverId];
+          schedule.lastResult = schedule.lastActionId != null
+              ? 'En curso'
+              : 'Interrumpida: revisa el estado del servidor antes de repetir.';
+        }
       }
       _key = await keyStorage.read(_prefs!);
     } catch (_) {
@@ -199,21 +213,81 @@ class VpsController extends ChangeNotifier {
   }
 
   Future<void> persistSchedules() async {
-    await _prefs?.setString(
+    final saved = await _prefs?.setString(
       'schedules',
       jsonEncode(schedules.map((s) => s.toJson()).toList()),
     );
+    if (saved != true) {
+      throw StateError('No se pudieron guardar las programaciones.');
+    }
   }
 
-  Future<void> addSchedule(ArchiveSchedule schedule) async {
-    schedules.add(schedule);
-    await persistSchedules();
+  String? scheduleError(ServerSchedule schedule) {
+    if (schedule.days.isEmpty ||
+        schedule.days.any((day) => day < 1 || day > 7) ||
+        schedule.hour < 0 ||
+        schedule.hour > 23 ||
+        schedule.minute < 0 ||
+        schedule.minute > 59) {
+      return 'Selecciona días y una hora válida.';
+    }
+    if (!servers.any((server) => server.id == schedule.serverId)) {
+      return 'El servidor ya no está disponible. Actualiza el listado.';
+    }
+    if (schedules.any(schedule.conflictsWith)) {
+      return 'Ya hay una regla activa para este servidor en la misma hora y alguno de esos días. Cambia el horario o pausa la otra regla.';
+    }
+    return null;
+  }
+
+  Future<void> addSchedule(ServerSchedule schedule) => saveSchedule(schedule);
+
+  Future<void> saveSchedule(ServerSchedule schedule) async {
+    if (_ticking) {
+      throw StateError(
+        'Espera a que termine la comprobación de las programaciones.',
+      );
+    }
+    final validation = scheduleError(schedule);
+    if (validation != null) throw ArgumentError(validation);
+    final previous = schedules.toList();
+    final index = schedules.indexWhere((s) => s.id == schedule.id);
+    if (index < 0) {
+      schedules.add(schedule);
+    } else {
+      schedules[index] = schedule;
+    }
+    try {
+      await persistSchedules();
+    } catch (_) {
+      schedules = previous;
+      rethrow;
+    }
     notifyListeners();
   }
 
-  Future<void> removeSchedule(ArchiveSchedule schedule) async {
+  Future<void> setScheduleEnabled(ServerSchedule schedule, bool enabled) async {
+    final updated = ServerSchedule.fromJson({
+      ...schedule.toJson(),
+      'enabled': enabled,
+    });
+    await saveSchedule(updated);
+  }
+
+  Future<void> removeSchedule(ServerSchedule schedule) async {
+    if (_ticking) {
+      throw StateError(
+        'Espera a que termine la comprobación de las programaciones.',
+      );
+    }
+    final previous = schedules.toList();
     schedules.remove(schedule);
-    await persistSchedules();
+    try {
+      await persistSchedules();
+    } catch (_) {
+      schedules = previous;
+      rethrow;
+    }
     notifyListeners();
   }
 
@@ -233,6 +307,18 @@ class VpsController extends ChangeNotifier {
             pendingActions.remove(entry.key);
             progress.remove(entry.key);
             await persistOperations();
+            for (final schedule in schedules.where(
+              (s) =>
+                  s.lastActionId == entry.value ||
+                  (s.serverId == entry.key &&
+                      s.lastResult == 'Enviando operación'),
+            )) {
+              schedule.lastActionId = entry.value;
+              schedule.lastResult = status == 'completed'
+                  ? 'Completada'
+                  : 'Error informado por Clouding';
+            }
+            await persistSchedules();
             log('Operación ${entry.value}: $status');
             await refresh();
             if (status == 'errored') {
@@ -243,31 +329,54 @@ class VpsController extends ChangeNotifier {
           error = 'No se pudo consultar el progreso: $e';
         }
       }
-      final now = DateTime.now();
-      for (final schedule in schedules.where((s) => s.due(now)).toList()) {
+      final now = clock();
+      final due = schedules.where((s) => s.due(now)).toList();
+      for (final schedule in due) {
         schedule.lastRun = schedule.occurrence(now);
+        schedule.lastAttemptAt = now.toIso8601String();
+        schedule.lastActionId = null;
+        schedule.lastResult = 'Comprobando estado';
+        // Claim this occurrence durably before reading/sending. Never replay writes.
         await persistSchedules();
         try {
-          if (progress.containsKey(schedule.serverId)) {
-            log('Programación omitida: servidor con operación pendiente.');
-            continue;
+          final conflicting = due.any(schedule.conflictsWith);
+          if (conflicting) {
+            schedule.lastResult =
+                'Omitida: hay reglas activas en conflicto para esta hora.';
+          } else if (progress.containsKey(schedule.serverId)) {
+            schedule.lastResult =
+                'Omitida: otra operación está pendiente en el servidor.';
+          } else {
+            final server = await api.detail(_key, schedule.serverId);
+            final reason = schedule.skipReason(server);
+            if (reason != null) {
+              schedule.lastResult = 'Omitida: $reason';
+            } else {
+              // A manual operation might have started while the detail request was pending.
+              if (!foreground ||
+                  !schedule.enabled ||
+                  !connected ||
+                  progress.containsKey(server.id)) {
+                schedule.lastResult = 'Omitida: la app no está activa o el servidor está ocupado.';
+              } else {
+                schedule.lastResult = 'Enviando operación';
+                await persistSchedules();
+                await operate(server, schedule.action.name);
+                schedule.lastActionId = pendingActions[server.id];
+                schedule.lastResult = schedule.lastActionId != null
+                    ? 'En curso'
+                    : 'Error: ${error ?? 'No se envió la operación.'}';
+              }
+            }
           }
-          final server = await api.detail(_key, schedule.serverId);
-          if (server.archived) {
-            log('${server.name}: ya está archivado.');
-            continue;
-          }
-          if (!server.stable) {
-            log(
-              '${server.name}: archivado omitido por estado ${server.status}.',
-            );
-            continue;
-          }
-          await operate(server, 'archive');
         } catch (e) {
           error = e.toString();
-          log('Programación fallida: $e');
+          schedule.lastResult = 'Error: $e';
         }
+        await persistSchedules();
+        log(
+          '${schedule.action.label} · ${schedule.serverId}: ${schedule.lastResult}',
+        );
       }
     } catch (e) {
       error = 'No se pudo ejecutar la programación: $e';

@@ -24,21 +24,44 @@ class Server {
   }
 }
 
-class ArchiveSchedule {
-  ArchiveSchedule({
+enum ScheduledAction {
+  start('Encender'),
+  stop('Apagar'),
+  archive('Archivar'),
+  unarchive('Desarchivar');
+
+  const ScheduledAction(this.label);
+  final String label;
+  String get warning => switch (this) {
+    start =>
+      'El servidor volverá a encenderse y sus servicios podrán iniciarse.',
+    stop => 'Sus servicios dejarán de estar disponibles. Apagar no equivale a archivar ni elimina el coste de los recursos.',
+    archive =>
+      'Sus servicios dejarán de estar disponibles al archivar el servidor.',
+    unarchive => 'Se recuperará el servidor archivado y se aplicará el coste del servidor activo. Esta regla no envía una orden de encendido adicional.',
+  };
+}
+
+class ServerSchedule {
+  ServerSchedule({
     required this.id,
     required this.serverId,
     required this.days,
     required this.hour,
     required this.minute,
+    this.action = ScheduledAction.archive,
     this.enabled = true,
     this.lastRun,
+    this.lastAttemptAt,
+    this.lastResult,
+    this.lastActionId,
   });
   final String id, serverId;
   final List<int> days;
   final int hour, minute;
+  final ScheduledAction action;
   bool enabled;
-  String? lastRun;
+  String? lastRun, lastAttemptAt, lastResult, lastActionId;
   String occurrence(DateTime now) => '${now.year}-${now.month}-${now.day}';
   bool due(DateTime now) =>
       enabled &&
@@ -46,22 +69,92 @@ class ArchiveSchedule {
       now.hour == hour &&
       now.minute == minute &&
       lastRun != occurrence(now);
+  DateTime? nextOccurrence(DateTime now) {
+    if (!enabled || days.isEmpty) return null;
+    final minuteNow = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      now.hour,
+      now.minute,
+    );
+    for (var offset = 0; offset <= 7; offset++) {
+      final candidate = DateTime(
+        now.year,
+        now.month,
+        now.day + offset,
+        hour,
+        minute,
+      );
+      if (days.contains(candidate.weekday) &&
+          !candidate.isBefore(minuteNow) &&
+          lastRun != occurrence(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  bool conflictsWith(ServerSchedule other) =>
+      enabled &&
+      other.enabled &&
+      id != other.id &&
+      serverId == other.serverId &&
+      hour == other.hour &&
+      minute == other.minute &&
+      days.any(other.days.contains);
+  String? skipReason(Server server) {
+    if (!server.stable) {
+      return 'Estado transitorio o incompatible: ${server.status}.';
+    }
+    return switch (action) {
+      ScheduledAction.archive =>
+        server.archived ? 'El servidor ya está archivado.' : null,
+      ScheduledAction.unarchive =>
+        !server.archived ? 'El servidor no está archivado.' : null,
+      ScheduledAction.start =>
+        server.archived
+            ? 'Primero debes desarchivar el servidor.'
+            : server.running
+            ? 'El servidor ya está encendido.'
+            : server.status != 'Stopped' &&
+                  server.data['powerState'] != 'Shutdown'
+            ? 'El estado de energía no permite programar el encendido.'
+            : null,
+      ScheduledAction.stop =>
+        server.archived
+            ? 'El servidor está archivado.'
+            : !server.running
+            ? 'El servidor no está en ejecución.'
+            : null,
+    };
+  }
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'serverId': serverId,
     'days': days,
     'hour': hour,
     'minute': minute,
+    'action': action.name,
     'enabled': enabled,
     'lastRun': lastRun,
+    'lastAttemptAt': lastAttemptAt,
+    'lastResult': lastResult,
+    'lastActionId': lastActionId,
   };
-  factory ArchiveSchedule.fromJson(Map<String, dynamic> j) => ArchiveSchedule(
+  factory ServerSchedule.fromJson(Map<String, dynamic> j) => ServerSchedule(
     id: j['id'],
     serverId: j['serverId'],
     days: List<int>.from(j['days']),
     hour: j['hour'],
     minute: j['minute'],
-    enabled: j['enabled'],
+    enabled: j['enabled'] ?? true,
+    // Old archive-only rules retain their original meaning.
+    action: ScheduledAction.values.byName(j['action'] ?? 'archive'),
     lastRun: j['lastRun'],
+    lastAttemptAt: j['lastAttemptAt'],
+    lastResult: j['lastResult'],
+    lastActionId: j['lastActionId'],
   );
 }
