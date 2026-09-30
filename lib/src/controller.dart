@@ -2,18 +2,19 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api.dart';
 import 'models.dart';
+import 'key_storage.dart';
 
 class VpsController extends ChangeNotifier {
-  VpsController({CloudingApi? api}) : api = api ?? CloudingApi();
+  VpsController({CloudingApi? api, ApiKeyStorage? keyStorage})
+    : api = api ?? CloudingApi(),
+      keyStorage = keyStorage ?? ApiKeyStorage();
   final CloudingApi api;
-  final _secure = const FlutterSecureStorage();
+  final ApiKeyStorage keyStorage;
   SharedPreferences? _prefs;
   String _key = '';
   bool initialized = false,
@@ -53,7 +54,7 @@ class VpsController extends ChangeNotifier {
       for (final id in progress.keys.toList()) {
         if (!pendingActions.containsKey(id)) progress[id] = 'Revisar resultado';
       }
-      if (!kIsWeb) _key = await _secure.read(key: 'clouding_api_key') ?? '';
+      _key = await keyStorage.read(_prefs!);
     } catch (_) {
       error = 'No se pudo leer la configuración local.';
     }
@@ -76,9 +77,7 @@ class VpsController extends ChangeNotifier {
     notifyListeners();
     try {
       final result = await api.servers(key.trim());
-      if (!kIsWeb) {
-        await _secure.write(key: 'clouding_api_key', value: key.trim());
-      }
+      await keyStorage.write(_prefs!, key.trim());
       final fingerprint = sha256.convert(utf8.encode(key.trim())).toString();
       if (_prefs?.getString('keyFingerprint') != fingerprint) {
         schedules.clear();
@@ -104,7 +103,7 @@ class VpsController extends ChangeNotifier {
     configuring = true;
     notifyListeners();
     try {
-      if (!kIsWeb) await _secure.delete(key: 'clouding_api_key');
+      await keyStorage.delete(_prefs!);
       _key = '';
       servers = [];
       updatedAt = null;
@@ -116,7 +115,7 @@ class VpsController extends ChangeNotifier {
       await persistSchedules();
       await persistOperations();
     } catch (_) {
-      error = 'No se pudo eliminar la clave del almacenamiento seguro.';
+      error = 'No se pudo eliminar la clave guardada.';
     } finally {
       configuring = false;
     }

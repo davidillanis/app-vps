@@ -16,7 +16,7 @@ flutter build apk --debug
 
 Android requiere API 23 o superior. La compilación release conserva la configuración de firma del proyecto original; configura tu propia firma antes de distribuir una APK.
 
-En Configuración, introduce la API KEY y pulsa **Validar y guardar** (Android) o **Validar y conectar** (Web). La validación realiza solo consultas; no modifica servidores. Una clave Operator sirve para operaciones básicas; cambiar nombres requiere Administrator. Read-only permite consultar.
+En Configuración, introduce la API KEY y pulsa **Validar y guardar**. La validación realiza solo consultas; no modifica servidores. Una clave Operator sirve para operaciones básicas; cambiar nombres requiere Administrator. Read-only permite consultar.
 
 ## Funciones
 
@@ -52,7 +52,7 @@ Las peticiones tienen límite de tiempo de 30 segundos. No hay reintentos autom�
 
 Android: `flutter_secure_storage`, cifrado y Android Keystore; se deshabilita el backup de la aplicación para evitar restaurar claves cifradas sin su clave de dispositivo. Permiso INTERNET en el manifest principal; tráfico HTTPS.
 
-Web: la clave está solo en memoria de la sesión y debes introducirla de nuevo al recargar. Una conexión directa no puede mantenerla secreta frente al navegador, extensiones o scripts del mismo origen. No se guarda en localStorage, código ni URL. Preferencias, horarios y bloqueos sí se guardan localmente; se usa una huella SHA-256 de la clave para asociarlos y evitar aplicar horarios a otra cuenta. Cambiar de clave o eliminarla borra las programaciones.
+Web: la clave se guarda en el almacenamiento local del navegador y se recupera automáticamente al recargar o abrir la aplicación. **Eliminar clave** borra también la copia persistente. Una conexión directa no puede mantenerla secreta frente al navegador, extensiones o scripts del mismo origen. Se guarda mediante SharedPreferences (localStorage en Web), sin cifrado secreto frente al navegador; no se incluye en el código ni en la URL. Borrar los datos del sitio también elimina la clave. Preferencias, horarios y bloqueos sí se guardan localmente; se usa una huella SHA-256 de la clave para asociarlos y evitar aplicar horarios a otra cuenta. Cambiar de clave o eliminarla borra las programaciones.
 
 Se verificaron preflight OPTIONS sin credenciales desde `http://localhost:8080`: GET /servers , POST /servers/cors-check/archive y PATCH /servers/cors-check/rename devolvieron 204, `Access-Control-Allow-Origin: *`, el método solicitado y los encabezados x-api-key/content-type. No se envió el POST. Esto verifica la política de preflight en ese origen y momento, no una operación autenticada. Usa HTTPS en producción. Si Clouding modifica CORS, el navegador puede bloquear la conexión y hará falta un servicio intermedio bajo tu control que mantenga la clave fuera del cliente. No desactives la seguridad del navegador.
 

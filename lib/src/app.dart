@@ -940,7 +940,7 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
               const SizedBox(height: 16),
               Text(
                 kIsWeb
-                    ? 'En Web, una conexión directa expone la clave al navegador. Se conserva solo en memoria hasta recargar o cerrar. CORS permite las consultas y acciones comprobadas, pero puede cambiar. Usa HTTPS y un navegador de confianza.'
+                    ? 'En Web, una conexión directa expone la clave al navegador. Se guarda en el almacenamiento local del navegador y se recupera al abrir la app. Otros scripts del mismo origen pueden acceder a ella; puedes borrarla con Eliminar clave. CORS permite las consultas y acciones comprobadas, pero puede cambiar. Usa HTTPS y un navegador de confianza.'
                     : 'La clave se guarda cifrada con flutter_secure_storage y protección de Android Keystore. Nunca se muestra la clave guardada.',
               ),
               const SizedBox(height: 20),
@@ -989,9 +989,7 @@ class _VpsHomeState extends State<VpsHome> with WidgetsBindingObserver {
                             if (c.error == null) keyInput.clear();
                           },
                     icon: const Icon(Icons.link),
-                    label: Text(
-                      kIsWeb ? 'Validar y conectar' : 'Validar y guardar',
-                    ),
+                    label: Text('Validar y guardar'),
                   ),
                   if (c.connected)
                     OutlinedButton.icon(
